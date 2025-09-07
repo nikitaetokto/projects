@@ -1,0 +1,1015 @@
+//It is recomended to compile this program on linux usig this comand: gcc ./main.c -lncurses
+//It is possible to compile this program on windows using mingw. You need to copy all ncurse files from \MinGW\include\ncurses to the project dir. Use this comand: gcc -I/mingw64/include/ncurses -o output main.c -lncurses -L/mingw64/bin -static 
+//visual artifacts may appear on windows
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+//windows:
+#include "ncurses.h" 
+
+// linux:
+// #include <ncurses.h>
+
+// Rozmery pola na hracom plane
+#define SPACE_WIDTH 18 // (16 vyuzitelne, 2 okraje)
+#define SPACE_HEIGHT 7 // (5 vyuzitelne, 2 okraje)
+
+#define JAIL_COLOR 10 // farebny kod pre pole IN JAIL a GO TO JAIL
+
+#define MAX_NAME 20       // max. dlzka nazvu (bez znaku '\0')
+#define NUM_SPACE_TYPES 6 // pocet typov poli na hracom plane
+#define NUM_SPACES 20     // pocet poli na hracom plane
+#define NUM_PROPERTIES 12 // pocet nehnutelnosti na hracom plane
+#define MAX_PLAYERS 4     // maximalny pocet hracov
+
+#define START_MENU_HEIGHT 21
+#define START_MENU_WIDTH 60
+
+// Nazvy typov poli na hracom plane
+const char *space_types[NUM_SPACE_TYPES] = {
+    "PROPERTY",
+    "START",
+    "FREE PARKING",
+    "IN JAIL",
+    "GO TO JAIL",
+    "JAIL PASS"};
+
+// Typy poli na hracom plane
+typedef enum _space_type
+{
+    Property,     // nehnutelnost
+    Start,        // startovacie pole
+    Free_parking, // specialne pole bez akcie
+    In_jail,      // specialne pole, predstavuje vazenie
+    Go_to_jail,   // specialne pole, ktore presunie hraca do vazenia
+    Jail_pass     // specialne pole s priepustkou
+} SPACE_TYPE;
+
+// Struktura pre nehnutelnost
+typedef struct _property
+{
+    char name[MAX_NAME + 1]; // nazov
+    int price;               // cena nehnutelnosti/vyska najomneho
+    short color;             // farba
+} PROPERTY;
+
+// Struktura pre pole na hracom plane
+typedef struct _space
+{
+    SPACE_TYPE type;    // typ pola na hracom plane
+    PROPERTY *property; // pointer na nehnutelnost ak je pole
+    // typu Property, inak NULL
+} SPACE;
+
+// Struktura reprezentujuca parametre okna
+typedef struct window_params
+{
+    int win_height;
+    int win_width;
+    int offset_y;
+    int offset_x;
+} WINDOW_PARAMS;
+
+typedef struct _player
+{
+    char name[MAX_NAME + 1];  // meno hraca
+    int money;                // peniaze hraca
+    int position;             // pozicia hraca na hracom plane
+    short color;              // farba hraca
+    int jail_pass;            // pocet priepustiek z vazenia
+    int is_ai;                // 1 ak je hrac AI, 0 ak je hrac clovek
+    PROPERTY *properties[12]; // pole nehnutelnosti hraca
+    int num_properties;       // pocet nehnutelnosti hraca
+    int is_in_jail;           // 1 ak je hrac vo vazeni, 0 ak nie je vo vazeni
+} PLAYER;
+
+// Zoznam nehnutelnosti na hracom plane
+PROPERTY properties[NUM_PROPERTIES] = {
+    {.name = "FOOD TRUCK", .price = 1, .color = COLOR_RED},
+    {.name = "PIZZA RESTAURANT", .price = 1, .color = COLOR_RED},
+    {.name = "DOUGHNUT SHOP", .price = 1, .color = COLOR_GREEN},
+    {.name = "ICE CREAM SHOP", .price = 1, .color = COLOR_GREEN},
+    {.name = "MUSEUM", .price = 2, .color = COLOR_YELLOW},
+    {.name = "LIBRARY", .price = 2, .color = COLOR_YELLOW},
+    {.name = "THE PARK", .price = 2, .color = COLOR_BLUE},
+    {.name = "THE BEACH", .price = 2, .color = COLOR_BLUE},
+    {.name = "POST OFFICE", .price = 3, .color = COLOR_MAGENTA},
+    {.name = "TRAIN STATION", .price = 3, .color = COLOR_MAGENTA},
+    {.name = "COMMUNITY GARDEN", .price = 3, .color = COLOR_CYAN},
+    {.name = "PET RESCUE", .price = 3, .color = COLOR_CYAN},
+};
+
+// Hraci plan
+SPACE game_board[NUM_SPACES] = {
+    {.type = Start, .property = NULL},
+    {.type = Property, .property = &properties[0]},
+    {.type = Property, .property = &properties[1]},
+    {.type = Jail_pass, .property = NULL},
+    {.type = Property, .property = &properties[2]},
+    {.type = In_jail, .property = NULL},
+    {.type = Property, .property = &properties[3]},
+    {.type = Property, .property = &properties[4]},
+    {.type = Jail_pass, .property = NULL},
+    {.type = Property, .property = &properties[5]},
+    {.type = Free_parking, .property = NULL},
+    {.type = Property, .property = &properties[6]},
+    {.type = Property, .property = &properties[7]},
+    {.type = Jail_pass, .property = NULL},
+    {.type = Property, .property = &properties[8]},
+    {.type = Go_to_jail, .property = NULL},
+    {.type = Property, .property = &properties[9]},
+    {.type = Property, .property = &properties[10]},
+    {.type = Jail_pass, .property = NULL},
+    {.type = Property, .property = &properties[11]}};
+
+//////////////////////   FUNKCIE //////////////////////
+
+// Funkcia, ktora vyfarbi zahlavie nehnutelnosti podla priradenej farby
+void print_color_header(WINDOW *win, const short color_id)
+{
+    wattron(win, COLOR_PAIR(color_id));
+    mvwprintw(win, 1, 1, "%*.s", SPACE_WIDTH - 2, " ");
+    wattroff(win, COLOR_PAIR(color_id));
+    wrefresh(win);
+}
+
+// Funkcia, ktora vyfarbi cele pole
+void print_color_space(WINDOW *win, const short color_id)
+{
+    wattron(win, COLOR_PAIR(color_id));
+    for (int i = 0; i < SPACE_HEIGHT - 2; i++)
+    {
+        mvwprintw(win, i + 1, 1, "%*.s", SPACE_WIDTH - 2, " ");
+    }
+    wattroff(win, COLOR_PAIR(color_id));
+    wrefresh(win);
+}
+int get_property_owner(PLAYER *players, int num_players, PROPERTY *property)
+{
+    for (int i = 0; i < num_players; i++)
+    {
+        for (int j = 0; j < players[i].num_properties; j++)
+        {
+            if (players[i].properties[j] == property)
+            {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+// Funkcia na nakreslenie pola na hracom plane
+WINDOW *show_space(const WINDOW_PARAMS *win_params, const SPACE *space, PLAYER *players, int num_players)
+{
+    WINDOW *local_win = newwin(win_params->win_height, win_params->win_width, win_params->offset_y,
+                               win_params->offset_x);
+    refresh();
+    box(local_win, 0, 0); // okraje okna
+    if (space->property)
+    {
+        print_color_header(local_win, space->property->color);
+        // if property is owned by a player, print the player's name on the property
+        if (get_property_owner(players, num_players, space->property) != -1)
+        {
+            int owner = get_property_owner(players, num_players, space->property);
+            mvwprintw(local_win, 2, 1, "%s", players[owner].name);
+        }
+        mvwprintw(local_win, 3, 1, "%.*s", SPACE_WIDTH - 2, space->property->name);
+        mvwprintw(local_win, 4, 1, "%d", space->property->price);
+    }
+    else
+    {
+        if (space->type == Go_to_jail || space->type == In_jail)
+        {
+            print_color_space(local_win, JAIL_COLOR);
+            wattron(local_win, COLOR_PAIR(JAIL_COLOR));
+            mvwprintw(local_win, 3, 1, "%.*s", SPACE_WIDTH - 2, space_types[space->type]);
+            wattroff(local_win, COLOR_PAIR(JAIL_COLOR));
+        }
+        else
+        {
+            mvwprintw(local_win, 3, 1, "%.*s", SPACE_WIDTH - 2, space_types[space->type]);
+        }
+    }
+    wrefresh(local_win);
+    return local_win;
+}
+
+// Funkcia na nakreslenie figurky na poli
+void show_token(WINDOW *win, const int y, const int x, const short color_id)
+{
+    wattron(win, COLOR_PAIR(color_id));
+    mvwprintw(win, y, x, " ");
+    wattroff(win, COLOR_PAIR(color_id));
+    wrefresh(win); // aktualizacia okna
+}
+
+// Funkcia na vypis hracieho planu
+WINDOW **show_gameboard(PLAYER *players, int num_players)
+{
+    WINDOW **visual_gameboard = (WINDOW **)malloc(NUM_SPACES * sizeof(WINDOW *));
+    int space_counter = 0;
+
+    WINDOW_PARAMS win_params = {SPACE_HEIGHT, SPACE_WIDTH, 1, 3};
+    visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+
+    // show_token(visual_gameboard[space_counter], 3, 7, COLOR_RED);
+    // show_token(visual_gameboard[space_counter], 3, 9, COLOR_GREEN);
+    // show_token(visual_gameboard[space_counter], 3, 11, COLOR_BLUE);
+    space_counter++;
+
+    for (int i = 0; i < 4; i++)
+    {
+        win_params.offset_x += SPACE_WIDTH;
+        visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+        space_counter++;
+    }
+
+    win_params.offset_x += SPACE_WIDTH;
+    visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+    space_counter++;
+
+    for (int i = 0; i < 4; i++)
+    {
+        win_params.offset_y += SPACE_HEIGHT;
+        visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+        space_counter++;
+    }
+
+    win_params.offset_y += SPACE_HEIGHT;
+    visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+    space_counter++;
+
+    for (int i = 0; i < 4; i++)
+    {
+        win_params.offset_x -= SPACE_WIDTH;
+        visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+        space_counter++;
+    }
+
+    win_params.offset_x -= SPACE_WIDTH;
+    visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+    space_counter++;
+
+    for (int i = 0; i < 4; i++)
+    {
+        win_params.offset_y -= SPACE_HEIGHT;
+        visual_gameboard[space_counter] = show_space(&win_params, &game_board[space_counter], players, num_players);
+        space_counter++;
+    }
+
+    for (int i = 0; i < NUM_SPACES; i++)
+    {
+        for (int j = 0; j < num_players; j++)
+        {
+            if (i == players[j].position)
+            {
+                show_token(visual_gameboard[i], SPACE_HEIGHT - 2, 1 + j * 2, players[j].color);
+            }
+        }
+    }
+
+    return visual_gameboard;
+}
+
+PLAYER *start_menu(int *num_players)
+{
+    // init a window for the menu
+    // get terminal size
+    int x, y;
+    getmaxyx(stdscr, y, x);
+
+
+    PLAYER *players = (PLAYER *)malloc(MAX_PLAYERS * sizeof(PLAYER));
+    for (int i = 0; i < MAX_PLAYERS; i++)
+    {
+        memset(players[i].name, 0, MAX_NAME);
+        strcat(players[i].name, "player");
+        char num[2];
+        sprintf(num, "%d", i + 1);
+        strcat(players[i].name, num);
+        players[i].name[MAX_NAME] = '\0';
+
+        players[i].money = 0;
+        players[i].position = 0;
+        players[i].color = i + 2;
+        players[i].jail_pass = 0;
+        players[i].is_ai = 0;
+    }
+    int start_money = 20;
+    int current_menu = 0;
+    int current_player = 0;
+    int current_player_option = 0;
+    int currenrt_button = 0;
+    int color_change_active = 0;
+    int name_change_active = 0;
+    int start_money_change_active = 0;
+
+    int players_count = MAX_PLAYERS;
+
+    while (1)
+    {
+
+        int ch;
+        // if tab is pressed, switch the current menu
+        if (ch == 9)
+        {
+            // printw("tab pressed");
+            current_menu++;
+            if (current_menu > 2)
+            {
+                current_menu = 0;
+            }
+        }
+        else if (ch == KEY_UP && color_change_active == 0 && name_change_active == 0)
+        {
+            if (current_menu == 0)
+            {
+                current_player--;
+                if (current_player < 0)
+                {
+                    current_player = players_count - 1;
+                }
+            }
+        }
+
+        else if (ch == KEY_DOWN && color_change_active == 0 && name_change_active == 0)
+        {
+            if (current_menu == 0)
+            {
+                current_player++;
+                if (current_player > players_count - 1)
+                {
+                    current_player = 0;
+                }
+            }
+        }
+        else if (ch == KEY_LEFT && color_change_active == 0 && name_change_active == 0)
+        {
+            if (current_menu == 0)
+            {
+
+                current_player_option--;
+                if (current_player_option < 0)
+                {
+                    current_player_option = 2;
+                }
+            }
+            else if (current_menu == 2)
+            {
+                currenrt_button--;
+                if (currenrt_button < 0)
+                {
+                    currenrt_button = 2;
+                }
+            }
+        }
+        else if (ch == KEY_RIGHT && color_change_active == 0 && name_change_active == 0)
+        {
+            if (current_menu == 0)
+            {
+
+                current_player_option++;
+                if (current_player_option > 2)
+                {
+                    current_player_option = 0;
+                }
+            }
+            else if (current_menu == 2)
+            {
+                currenrt_button++;
+                if (currenrt_button > 2)
+                {
+                    currenrt_button = 0;
+                }
+            }
+        }
+        else if (ch == ' ')
+        {
+            if (current_menu == 0 && current_player_option == 2)
+            {
+                players[current_player].is_ai = !players[current_player].is_ai;
+            }
+            else if (current_menu == 0 && current_player_option == 1)
+            {
+                color_change_active = !color_change_active;
+            }
+            else if (current_menu == 0 && current_player_option == 0)
+            {
+                name_change_active = !name_change_active;
+            }
+            else if (current_menu == 1)
+            {
+                start_money_change_active = !start_money_change_active;
+            }
+            else if (current_menu == 2 && currenrt_button == 0)
+            {
+                // add player
+                players_count++;
+                if (players_count > MAX_PLAYERS)
+                {
+                    players_count = MAX_PLAYERS;
+                }
+                else
+                {
+                    memset(players[players_count - 1].name, 0, MAX_NAME);
+                    strcat(players[players_count - 1].name, "Player ");
+                    char num[2];
+                    sprintf(num, "%d", players_count);
+                    strcat(players[players_count - 1].name, num);
+
+                    players[players_count - 1].money = 0;
+                    players[players_count - 1].position = 0;
+                    players[players_count - 1].color = players_count + 1;
+                    players[players_count - 1].jail_pass = 0;
+                    players[players_count - 1].is_ai = 0;
+                }
+            }
+            else if (current_menu == 2 && currenrt_button == 1)
+            {
+                // remove player
+                players_count--;
+                if (players_count < 0)
+                {
+                    players_count = 0;
+                }
+                // remove current player from players
+                // zero out all the values of current player
+                memset(players[current_player].name, 0, MAX_NAME);
+                players[current_player].money = 0;
+                players[current_player].position = 0;
+                players[current_player].color = 0;
+                players[current_player].jail_pass = 0;
+                players[current_player].is_ai = 0;
+                for (int i = current_player; i < players_count; i++)
+                {
+                    players[i] = players[i + 1];
+                }
+            }
+            else if (current_menu == 2 && currenrt_button == 2)
+            {
+                // start game
+                if (players_count < 2 || start_money < 1)
+                {
+                    // print error message under the menu window
+                    //"it is not possible to start the game with less than 2 players or with start money less than 1"
+                    mvprintw(y - 10, 0, "IT IS NOT POSSIBLE TO START THE GAME WITH LESS THAN 2 PLAYERS OR WITH START MONEY LESS THAN 1");
+                    refresh();
+                    getch();
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        WINDOW *menu_win = newwin(START_MENU_HEIGHT, START_MENU_WIDTH, (y - START_MENU_HEIGHT) / 2, (x - START_MENU_WIDTH) / 2);
+        // write help text under the menu
+        mvprintw(y - 2, 0, "TAB TO SWITCH MENU, ARROWS TO NAVIGATE, SPACE TO SELECT, ENTER TO CONFIRM");
+        WINDOW *player_list_win = derwin(menu_win, 10, START_MENU_WIDTH - 2, 2, 1);
+        WINDOW *start_values_win = derwin(menu_win, 3, START_MENU_WIDTH - 2, START_MENU_HEIGHT - 9, 1);
+        WINDOW *buttons_win = derwin(menu_win, 5, START_MENU_WIDTH - 2, START_MENU_HEIGHT - 6, 1);
+        WINDOW *button1 = derwin(buttons_win, 3, 12, 1, 1);
+        WINDOW *button2 = derwin(buttons_win, 3, 15, 1, 21);
+        WINDOW *button3 = derwin(buttons_win, 3, 12, 1, 45);
+        wrefresh(menu_win);
+        wrefresh(player_list_win);
+        wrefresh(start_values_win);
+        wrefresh(buttons_win);
+        wrefresh(button1);
+        wrefresh(button2);
+        wrefresh(button3);
+        refresh();
+        wbkgd(button1, COLOR_PAIR(8));
+        wbkgd(button2, COLOR_PAIR(8));
+        wbkgd(button3, COLOR_PAIR(8));
+        wbkgd(menu_win, COLOR_PAIR(8));
+
+        switch (current_menu)
+        {
+        // change color of the frame of player_list_win start_values_win and buttons_win
+        case 0:
+            wbkgd(player_list_win, COLOR_PAIR(10));
+            wbkgd(start_values_win, COLOR_PAIR(8));
+            wbkgd(buttons_win, COLOR_PAIR(8));
+            break;
+        case 1:
+            wbkgd(player_list_win, COLOR_PAIR(8));
+            wbkgd(start_values_win, COLOR_PAIR(10));
+            wbkgd(buttons_win, COLOR_PAIR(8));
+            break;
+        case 2:
+            wbkgd(player_list_win, COLOR_PAIR(8));
+            wbkgd(start_values_win, COLOR_PAIR(8));
+            wbkgd(buttons_win, COLOR_PAIR(10));
+            break;
+        }
+        if (current_menu == 2)
+        {
+            if (currenrt_button == 0)
+            {
+                wbkgd(button1, COLOR_PAIR(11));
+                wbkgd(button2, COLOR_PAIR(8));
+                wbkgd(button3, COLOR_PAIR(8));
+            }
+            else if (currenrt_button == 1)
+            {
+                wbkgd(button1, COLOR_PAIR(8));
+                wbkgd(button2, COLOR_PAIR(11));
+                wbkgd(button3, COLOR_PAIR(8));
+            }
+            else if (currenrt_button == 2)
+            {
+                wbkgd(button1, COLOR_PAIR(8));
+                wbkgd(button2, COLOR_PAIR(8));
+                wbkgd(button3, COLOR_PAIR(11));
+            }
+        }
+        box(menu_win, 0, 0);
+        mvwprintw(menu_win, 1, (START_MENU_WIDTH - 8) / 2, "SETTINGS");
+        box(buttons_win, 0, 0);
+
+        mvwprintw(button1, 1, 1, "ADD PLAYER");
+        box(button1, 0, 0);
+        mvwprintw(button2, 1, 1, "REMOVE PLAYER");
+        box(button2, 0, 0);
+        box(button3, 0, 0);
+        mvwprintw(button3, 1, 1, "START GAME");
+        box(player_list_win, 0, 0);
+        // print 4 empty player slots
+
+        for (int i = 0; i < players_count; i++)
+        {
+            WINDOW *player_slot = derwin(player_list_win, 2, START_MENU_WIDTH - 4, 1 + i * 2, 1);
+            // box(player_slot, 0, 0);
+            if (i == current_player)
+            {
+
+                // wbkgd(player_slot, COLOR_PAIR(11));
+                wattron(player_slot, COLOR_PAIR(8));
+                switch (current_player_option)
+                {
+                case 0:
+                    if (name_change_active)
+                    {
+
+                        // read name
+                        mvwprintw(player_slot, 1, 1, "NEW NAME(ENTER TO FINISH):", i + 1);
+                        // turn echo on
+                        echo();
+                        // empty the name
+                        memset(players[i].name, 0, MAX_NAME);
+
+                        mvwgetnstr(player_slot, 1, 29, players[i].name, MAX_NAME);
+
+                        // turn echo off
+                        noecho();
+                        name_change_active = 0;
+                        continue;
+                    }
+                    wattron(player_slot, A_BOLD);
+                    mvwprintw(player_slot, 1, 1, players[i].name, i + 1);
+                    wattroff(player_slot, A_BOLD);
+                    mvwprintw(player_slot, 1, 20, "COLOR", i + 1);
+                    if (players[i].is_ai)
+                    {
+                        mvwprintw(player_slot, 1, 30, "IS AI [X]", i + 1);
+                    }
+                    else
+                    {
+                        mvwprintw(player_slot, 1, 30, "IS AI [ ]", i + 1);
+                    }
+                    break;
+                case 1:
+
+                    mvwprintw(player_slot, 1, 1, players[i].name, i + 1);
+                    wattron(player_slot, A_BOLD);
+                    if (color_change_active)
+                    {
+                        wattron(player_slot, A_BLINK);
+                        // read color number from user
+                        mvwprintw(player_slot, 1, 20, "COLOR:", i + 1);
+                        echo();
+                        char color_str[2];
+                        mvwgetnstr(player_slot, 1, 27, color_str, 1);
+                        noecho();
+                        // convert string to int
+                        int color = atoi(color_str);
+                        if (color >= 0 && color <= 5)
+                        {
+                            players[i].color = color;
+                        }
+                        color_change_active = 0;
+                    }
+                    wattron(player_slot, COLOR_PAIR(players[i].color));
+                    mvwprintw(player_slot, 1, 20, "COLOR", i + 1);
+                    wattroff(player_slot, COLOR_PAIR(players[i].color));
+                    wattroff(player_slot, A_BOLD);
+                    wattroff(player_slot, A_BLINK);
+                    if (players[i].is_ai)
+                    {
+                        mvwprintw(player_slot, 1, 30, "IS AI [X]", i + 1);
+                    }
+                    else
+                    {
+                        mvwprintw(player_slot, 1, 30, "IS AI [ ]", i + 1);
+                    }
+                    break;
+                case 2:
+                    mvwprintw(player_slot, 1, 1, players[i].name, i + 1);
+                    mvwprintw(player_slot, 1, 20, "COLOR", i + 1);
+                    wattron(player_slot, A_BOLD);
+                    if (players[i].is_ai)
+                    {
+                        mvwprintw(player_slot, 1, 30, "IS AI [X]", i + 1);
+                    }
+                    else
+                    {
+                        mvwprintw(player_slot, 1, 30, "IS AI [ ]", i + 1);
+                    }
+                    wattroff(player_slot, A_BOLD);
+                    break;
+                }
+            }
+            else
+            {
+                // wbkgd(player_slot, COLOR_PAIR(10));
+                // wattrset(player_slot, A_NORMAL);
+                wattroff(player_slot, COLOR_PAIR(8));
+                wattroff(player_slot, A_BLINK);
+                mvwprintw(player_slot, 1, 1, players[i].name, i + 1);
+                mvwprintw(player_slot, 1, 20, "COLOR", i + 1);
+                if (players[i].is_ai)
+                {
+                    mvwprintw(player_slot, 1, 30, "IS AI [X]", i + 1);
+                }
+                else
+                {
+                    mvwprintw(player_slot, 1, 30, "IS AI [ ]", i + 1);
+                }
+            }
+
+            wrefresh(player_slot);
+        }
+        if (start_money_change_active)
+        {
+            mvwprintw(start_values_win, 1, 1, "NEW AMOUNT(ENTER TO FINISH): ");
+            echo();
+            char start_money_str[4];
+            mvwgetnstr(start_values_win, 1, 29, start_money_str, 3);
+            noecho();
+            // convert string to int
+            start_money = atoi(start_money_str);
+
+            start_money_change_active = 0;
+            mvwprintw(start_values_win, 1, 1, "                                   ");
+        }
+
+        box(start_values_win, 0, 0);
+        mvwprintw(start_values_win, 1, 1, "START MONEY: %d", start_money);
+
+        wrefresh(menu_win);
+        wrefresh(player_list_win);
+        wrefresh(start_values_win);
+        wrefresh(buttons_win);
+        wrefresh(button1);
+        wrefresh(button2);
+        wrefresh(button3);
+        refresh();
+        ch = getch();
+        clear();
+    }
+    // assign start money to players
+    for (int i = 0; i < MAX_PLAYERS; i++)
+    {
+        players[i].money = start_money;
+    }
+    *num_players = players_count;
+    return players;
+}
+
+int check_for_monopoly(PLAYER *players, int num_players, PROPERTY *property)
+{
+    int color = property->color;
+    int count = 0;
+    for (int i = 0; i < num_players; i++)
+    {
+        for (int j = 0; j < players[i].num_properties; j++)
+        {
+            if (players[i].properties[j]->color == color)
+            {
+                count++;
+            }
+        }
+    }
+    if (count == 2)
+    {
+        return 1;
+    }
+    return 0;
+}
+// calculate sum of all properties of a player
+int get_propertys_price(PLAYER *players, int num_players, int player_index)
+{
+    int sum = 0;
+    for (int i = 0; i < players[player_index].num_properties; i++)
+    {
+        sum += players[player_index].properties[i]->price;
+    }
+    return sum;
+}
+int calculate_winning_player(PLAYER *players, int num_players)
+{
+    // create coppy of players
+    PLAYER *players_copy = (PLAYER *)malloc(num_players * sizeof(PLAYER));
+    for (int i = 0; i < num_players; i++)
+    {
+        players_copy[i] = players[i];
+    }
+    int max_money = 0;
+    int winning_player = 0;
+    for (int i = 0; i < num_players; i++)
+    {
+        // add the sum of all properties to the money of the player
+        players_copy[i].money += get_propertys_price(players_copy, num_players, i);
+        if (players_copy[i].money > max_money)
+        {
+            max_money = players_copy[i].money;
+            winning_player = i;
+        }
+    }
+    return winning_player;
+}
+
+int main()
+{
+    int num_players = 0;
+    initscr();            // inicializacia ncurses
+    cbreak();             // deaktivujeme line buffering pre okamzitu dostupnost stlacenych klavesov
+    noecho();             // deaktivujeme vypis stlacenych klavesov
+    keypad(stdscr, TRUE); // aktivujeme odchytavanie specialnych klavesov (backspace, delete, sipky, ...)
+    curs_set(FALSE);      // deaktivacia kurzora
+    if (has_colors() == FALSE)
+    {
+        endwin();
+        printf("Your terminal does not support color.\n");
+        return 1;
+    }
+
+    // inicializacia farieb
+    start_color();
+    init_pair(COLOR_RED, COLOR_RED, COLOR_RED);
+    init_pair(COLOR_GREEN, COLOR_GREEN, COLOR_GREEN);
+    init_pair(COLOR_YELLOW, COLOR_YELLOW, COLOR_YELLOW);
+    init_pair(COLOR_BLUE, COLOR_BLUE, COLOR_BLUE);
+    init_pair(COLOR_MAGENTA, COLOR_MAGENTA, COLOR_MAGENTA);
+    init_pair(COLOR_CYAN, COLOR_CYAN, COLOR_CYAN);
+    init_pair(JAIL_COLOR, COLOR_BLACK, COLOR_WHITE);
+    init_pair(8, COLOR_GREEN, COLOR_BLACK);
+    init_pair(9, COLOR_WHITE, COLOR_BLACK);
+    init_pair(10, COLOR_RED, COLOR_BLACK);
+    init_pair(11, COLOR_BLACK, COLOR_RED);
+    PLAYER *players = start_menu(&num_players);
+    refresh();
+    clear();
+    WINDOW **visual_gameboard = show_gameboard(players, num_players);
+    free(visual_gameboard);
+
+    int turn = 0;
+    int current_player = 0;
+    while (1)
+    {
+        // nadpis
+        mvprintw(21, 50, "Monopoly");
+        refresh();
+        WINDOW *heading_win = newwin(3, 8, 20, 58);
+        refresh();
+        box(heading_win, 0, 0); // okraje okna
+        mvwprintw(heading_win, 1, 1, "cursed");
+        wrefresh(heading_win);
+        int dice = 0;
+        WINDOW **visual_gameboard = show_gameboard(players, num_players);
+        free(visual_gameboard);
+        // create a window for dice and game info
+        WINDOW *dice_win = newwin(7, 25, 10, SPACE_WIDTH * 6 + 8);
+        box(dice_win, 0, 0);
+        // mvwprintw(dice_win, 1, 1, "LAST DICE ROLL: %d", dice);
+        // mvwprintw(dice_win, 2, 1, "CURRENT PLAYER: %s", players[current_player].name);
+        // mvwprintw(dice_win, 3, 1, "IS AI: %d", players[current_player].is_ai);
+        // wrefresh(dice_win);
+        // refresh();
+
+        // hraci - legenda
+        for (int i = 0; i < num_players; i++)
+        {
+            char player_info[50];
+            sprintf(player_info, "%s: %d$ Pos%d JP%d IJ%d NW:%d", players[i].name, players[i].money, players[i].position, players[i].jail_pass, players[i].is_in_jail, get_propertys_price(players, num_players, i));
+            mvprintw(20 + (i * 2), 6 * SPACE_WIDTH + 10, "                                             ");
+            mvprintw(20 + (i * 2), 6 * SPACE_WIDTH + 10, player_info);
+            show_token(stdscr, 20 + (i * 2), 6 * SPACE_WIDTH + 8, players[i].color);
+        }
+        refresh();
+        // check if player is in jail
+        if (players[current_player].is_in_jail)
+        {
+            players[current_player].money -= 1;
+        }
+
+        // dice roll
+        if (players[current_player].is_ai)
+        {
+            // roll random number from 1 to 6
+            srand(time(0) + turn);
+            dice = 0;
+            dice = (rand() % 6) + 1;
+            // move player
+            players[current_player]
+                .position += dice;
+            if (players[current_player].position >= NUM_SPACES)
+            {
+                players[current_player].position -= NUM_SPACES;
+                // add 5 to player's money
+                players[current_player].money += 5;
+            }
+        }
+        else
+        {
+            // open a window and ask the player to input a number from 1 to 6
+            // if no numver is inputed, roll a random number
+            WINDOW *dice_roll_win = newwin(5, 50, 2, SPACE_WIDTH * 6 + 8);
+            box(dice_roll_win, 0, 0);
+            mvwprintw(dice_roll_win, 1, 1, "ENTER NUMBER FROM 1 TO 6");
+            mvwprintw(dice_roll_win, 2, 1, "OR PRESS ENTER TO ROLL RANDOM NUMBER:");
+            wrefresh(dice_roll_win);
+            echo();
+            char dice_str[2];
+            mvwgetnstr(dice_roll_win, 2, 39, dice_str, 1);
+            noecho();
+            if (strlen(dice_str) == 0 || atoi(dice_str) < 1 || atoi(dice_str) > 6)
+            {
+                // roll random number from 1 to 6
+                srand(time(0) + turn);
+                dice = 0;
+                dice = (rand() % 6) + 1;
+            }
+            else
+            {
+                dice = atoi(dice_str);
+            }
+            players[current_player].position += dice;
+            if (players[current_player].position >= NUM_SPACES)
+            {
+                players[current_player].position -= NUM_SPACES;
+                // add 5 to player's money
+                players[current_player].money += 5;
+            }
+        }
+        // action on the field
+
+        // gameboard
+        visual_gameboard = show_gameboard(players, num_players);
+        free(visual_gameboard);
+        switch (game_board[players[current_player].position].type)
+        {
+
+        case Property:
+            if (get_property_owner(players, num_players, game_board[players[current_player].position].property) == -1)
+            {
+                // chek if player is ai
+                if (players[current_player].is_ai)
+                {
+                    // buy property
+                    players[current_player].properties[players[current_player].num_properties] = game_board[players[current_player].position].property;
+                    players[current_player].num_properties++;
+                    players[current_player].money -= game_board[players[current_player].position].property->price;
+                    if (players[current_player].money < 0)
+                    {
+                        // player is bankrupt
+                        break;
+                    }
+                }
+                else
+                {
+                    // check if player has enough money to buy the property
+                    if (players[current_player].money >= game_board[players[current_player].position].property->price)
+                    {
+                        // ask player if he wants to buy the property
+                        WINDOW *buy_property_win = newwin(5, 50, 2, SPACE_WIDTH * 6 + 8);
+                        box(buy_property_win, 0, 0);
+                        mvwprintw(buy_property_win, 1, 1, "DO YOU WANT TO BUY %s FOR %d$?", game_board[players[current_player].position].property->name, game_board[players[current_player].position].property->price);
+                        mvwprintw(buy_property_win, 2, 1, "PRESS Y TO BUY, N TO PASS");
+                        wrefresh(buy_property_win);
+                        int ch = getch();
+                        if (ch == 'y')
+                        {
+                            players[current_player].properties[players[current_player].num_properties] = game_board[players[current_player].position].property;
+                            players[current_player].num_properties++;
+                            players[current_player].money -= game_board[players[current_player].position].property->price;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // pay rent
+                int owner = get_property_owner(players, num_players, game_board[players[current_player].position].property);
+                // players[current_player].money -= game_board[players[current_player].position].property->price;
+                // players[owner].money += game_board[players[current_player].position].property->price;
+                // check if the property is a monopoly
+                if (check_for_monopoly(players, num_players, game_board[players[current_player].position].property))
+                {
+                    // pay double rent
+                    players[current_player].money -= game_board[players[current_player].position].property->price * 2;
+                    players[owner].money += game_board[players[current_player].position].property->price * 2;
+                }
+                else
+                {
+                    players[current_player].money -= game_board[players[current_player].position].property->price;
+                    players[owner].money += game_board[players[current_player].position].property->price;
+                }
+                // if player is bankrupt
+                if (players[current_player].money < 0)
+                {
+                    // player is bankrupt
+                    break;
+                }
+            }
+
+            break;
+        case Go_to_jail:
+            // move the player to jail
+            // check if the player has a jail pass
+            // if no, move the player to the jail
+            // if yes, subtract the jail pass from the player's jail pass
+            if (players[current_player].jail_pass > 0)
+            {
+                players[current_player].jail_pass--;
+            }
+            else
+            {
+                players[current_player].position = 5;
+                players[current_player].is_in_jail = 1;
+            }
+            break;
+        case Jail_pass:
+            // add a jail pass to the player
+            players[current_player].jail_pass++;
+            break;
+        }
+
+        mvwprintw(dice_win, 1, 1, "LAST DICE ROLL: %d", dice);
+        mvwprintw(dice_win, 2, 1, "LAST PLAYER: %s", players[current_player].name);
+        mvwprintw(dice_win, 3, 1, "IS AI: %d", players[current_player].is_ai);
+        wrefresh(dice_win);
+        refresh();
+
+        // hraci - legenda
+        for (int i = 0; i < num_players; i++)
+        {
+            char player_info[50];
+            sprintf(player_info, "%s: %d$ Pos%d JP%d IJ%d NW:%d", players[i].name, players[i].money, players[i].position, players[i].jail_pass, players[i].is_in_jail, get_propertys_price(players, num_players, i));
+            mvprintw(20 + (i * 2), 6 * SPACE_WIDTH + 10, "                                              ");
+            mvprintw(20 + (i * 2), 6 * SPACE_WIDTH + 10, player_info);
+            show_token(stdscr, 20 + (i * 2), 6 * SPACE_WIDTH + 8, players[i].color);
+        }
+        refresh();
+        // add 1 to current players position
+
+        // getch();
+        current_player++;
+        turn++;
+        if (current_player >= num_players)
+        {
+            current_player = 0;
+        }
+        // check if any player is bankrupt
+
+        for (int i = 0; i < num_players; i++)
+        {
+            if (players[i].money < 0)
+            {
+
+                // clear();
+                // endwin();
+                // return 0;
+                wattron(stdscr, COLOR_PAIR(11));
+                clear();
+                mvprintw(20, 50, "PLAYER %s IS BANKRUPT", players[i].name);
+                int winer = calculate_winning_player(players, num_players);
+                mvprintw(21, 50, "WINNER IS %s", players[winer].name);
+                getch();
+                return 0;
+                break;
+            }
+        }
+        // clear();
+    }
+    clear();
+    endwin(); // ukoncenie prace s ncurses
+    return 0;
+}
