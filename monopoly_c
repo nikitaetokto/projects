@@ -1,3 +1,4 @@
+                        //Monopoly game project in C using ncurses library with specific rules (according to the task)
 //It is recomended to compile this program on linux usig this comand: gcc ./main.c -lncurses
 //It is possible to compile this program on windows using mingw. You need to copy all ncurse files from \MinGW\include\ncurses to the project dir. Use this comand: gcc -I/mingw64/include/ncurses -o output main.c -lncurses -L/mingw64/bin -static 
 //visual artifacts may appear on windows
