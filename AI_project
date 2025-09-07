@@ -1,5 +1,5 @@
 '''
-                    INTRODUCTION TO ARTIFICIAL INTELLIGENCE - LAB ASSIGNMENT 2
+                              INTRODUCTION TO ARTIFICIAL INTELLIGENCE
                                     ZIBOROV NIKITA, FER UNIZG
 
 used literature sources:
@@ -151,4 +151,5 @@ if args.choice=="resolution":
     riadky, x, final = readfile_resolution(args.filename)
     resolution(riadky, x, final)
 if args.choice=="cooking": cooking(args.filename, args.filename_comanda)
+
 
