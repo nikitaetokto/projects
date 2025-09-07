@@ -17,10 +17,6 @@ import argparse
 
 #function for correct reading of file for refutation resolution and cooking (clauses only)
 def readfile_resolution(filename):
-    if filename == "new_example_6.txt": return
-    #explanation - this test suite does NOT work properly??? it may be my problem, but sometimes it works fine,
-    #but sometimes it returns runtime error :( idk what to do with this so this test is ignored
-    #(i completely understand consequences of this action)
     riadky = []
     file = open(filename, 'r')
     for line in file: #open file, function strip (without " ") and split ("division" of every riadok by disjunction symbol)
@@ -155,3 +151,4 @@ if args.choice=="resolution":
     riadky, x, final = readfile_resolution(args.filename)
     resolution(riadky, x, final)
 if args.choice=="cooking": cooking(args.filename, args.filename_comanda)
+
